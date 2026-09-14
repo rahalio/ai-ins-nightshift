@@ -1,0 +1,1766 @@
+openapi: 3.0.3
+info:
+  title: Nightshift
+  version: 0.1.0
+  description: >-
+    Actuarial production control plane for the valuation and reporting close. Runs
+    the dependency-aware job graph unattended, captures lineage for every reported
+    figure, blocks sign-off on reconciliation breaks, attributes reserve and
+    earnings movement to named causes, drafts reporting narrative for actuarial
+    attestation, and gates production status on documentation sufficiency.
+  x-product-slug: ai-ins-nightshift
+  x-source: ai-in-insurance/deloitte-he_Rise_of_the_Exponential_Actuary/
+servers:
+  - url: https://api.example.com
+tags:
+  - name: Runs
+    description: Production runs, job graph, unattended execution, and escalation
+  - name: Lineage
+    description: Model, assumption, extract, and treaty version binding for results
+  - name: Reconciliation
+    description: Tie-out checkpoints, breaks, and manual adjustments
+  - name: Attribution
+    description: Movement decomposition into named causes
+  - name: Reporting
+    description: Narrative drafts, attestation, and disclosure exhibits
+  - name: Registry
+    description: Model and assumption register, documentation, and change control
+  - name: Deliverables
+    description: Statutory deadlines, filing consistency, and in-force inventory
+paths:
+  /v1/production-runs:
+    get:
+      operationId: listProductionRuns
+      tags: [Runs]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: reportingPeriod
+          in: query
+          schema:
+            type: string
+            example: 2026-Q2
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/RunStatus"
+        - name: basis
+          in: query
+          schema:
+            $ref: "#/components/schemas/ReportingBasis"
+      responses:
+        "200":
+          description: Production runs page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeProductionRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: scheduleProductionRun
+      tags: [Runs]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductionRunCreate"
+      responses:
+        "201":
+          description: Run scheduled against the resolved dependency graph
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeProductionRun"
+        "409":
+          description: >-
+            Rejected because a model or assumption set in scope has lapsed
+            documentation or an unapproved change request, so it may not enter a
+            reported close.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/production-runs/{runId}:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      operationId: getProductionRun
+      tags: [Runs]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Run with job states, escalations, and sign-off state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeProductionRun"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/production-runs/{runId}/jobs:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      operationId: listRunJobs
+      tags: [Runs]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, succeeded, failed, retrying, escalated, skipped]
+      responses:
+        "200":
+          description: Jobs in the run graph with dependencies and timings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeRunJob"
+  /v1/production-runs/{runId}/jobs/{jobId}/retry:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+      - $ref: "#/components/parameters/JobId"
+    post:
+      operationId: retryRunJob
+      tags: [Runs]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                forced:
+                  type: boolean
+                  description: Set when a human overrides the safe-retry assessment
+      responses:
+        "202":
+          description: Retry accepted within the bounded retry policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeRunJob"
+        "409":
+          description: >-
+            Retry refused because the job is not safe to retry, for example a
+            posting step already committed. Escalated to the named on-call owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/dependency-graph:
+    get:
+      operationId: getDependencyGraph
+      tags: [Runs]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: basis
+          in: query
+          schema:
+            $ref: "#/components/schemas/ReportingBasis"
+        - name: undeclaredOnly
+          in: query
+          schema:
+            type: boolean
+            description: Return only edges discovered from observed run behaviour
+      responses:
+        "200":
+          description: Job dependency edges including discovered dependencies
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeDependencyGraph"
+  /v1/results/{resultSetId}/lineage:
+    parameters:
+      - $ref: "#/components/parameters/ResultSetId"
+    get:
+      operationId: getResultLineage
+      tags: [Lineage]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: >-
+            Model versions, assumption sets, extracts, and treaty terms that
+            produced the figure, reproducible without re-running models.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeResultLineage"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/production-runs/{runId}/reconciliations:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      operationId: listReconciliationChecks
+      tags: [Reconciliation]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: outcome
+          in: query
+          schema:
+            type: string
+            enum: [passed, broken, waived]
+      responses:
+        "200":
+          description: Tie-outs between models, ledger, and prior close
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeReconciliationCheck"
+  /v1/reconciliation-breaks/{breakId}/adjudication:
+    parameters:
+      - $ref: "#/components/parameters/BreakId"
+    post:
+      operationId: adjudicateReconciliationBreak
+      tags: [Reconciliation]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actuaryId, resolution, rationale]
+              properties:
+                actuaryId:
+                  type: string
+                resolution:
+                  type: string
+                  enum: [corrected_upstream, manual_adjustment, tolerance_accepted, rerun_required]
+                rationale:
+                  type: string
+                manualAdjustmentId:
+                  type: string
+      responses:
+        "200":
+          description: Break adjudicated, sign-off unblocked if resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeReconciliationBreak"
+  /v1/manual-adjustments:
+    post:
+      operationId: recordManualAdjustment
+      tags: [Reconciliation]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManualAdjustmentCreate"
+      responses:
+        "201":
+          description: Adjustment recorded permanently with reason and approver
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeManualAdjustment"
+        "422":
+          description: Rejected when no reason, owner, or approver is supplied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/production-runs/{runId}/attribution:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      operationId: getMovementAttribution
+      tags: [Attribution]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: measure
+          in: query
+          schema:
+            type: string
+            enum: [technical_provision, contractual_service_margin, earnings, liability_for_future_policy_benefits]
+        - name: groupingLevel
+          in: query
+          schema:
+            type: string
+            enum: [entity, portfolio, contract_group, cohort, product]
+      responses:
+        "200":
+          description: Movement decomposed into named causes at required disaggregation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeMovementAttribution"
+  /v1/attribution-items/{attributionItemId}/reclassification:
+    parameters:
+      - $ref: "#/components/parameters/AttributionItemId"
+    post:
+      operationId: reclassifyAttributionCause
+      tags: [Attribution]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actuaryId, revisedCause, rationale]
+              properties:
+                actuaryId:
+                  type: string
+                revisedCause:
+                  $ref: "#/components/schemas/AttributionCause"
+                rationale:
+                  type: string
+      responses:
+        "200":
+          description: Cause reclassified by an actuary with recorded rationale
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeAttributionItem"
+  /v1/narratives:
+    get:
+      operationId: listNarrativeDrafts
+      tags: [Reporting]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: runId
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [generated, in_edit, awaiting_attestation, attested, published, withdrawn]
+      responses:
+        "200":
+          description: Narrative and memorandum drafts page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeNarrativeDraft"
+    post:
+      operationId: generateNarrativeDraft
+      tags: [Reporting]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NarrativeDraftCreate"
+      responses:
+        "201":
+          description: Draft generated from attributed movements, unsigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeNarrativeDraft"
+  /v1/narratives/{narrativeId}/attestation:
+    parameters:
+      - $ref: "#/components/parameters/NarrativeId"
+    post:
+      operationId: attestNarrative
+      tags: [Reporting]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttestationCreate"
+      responses:
+        "200":
+          description: Narrative attested by a named credentialed actuary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeAttestation"
+        "403":
+          description: >-
+            Refused because the signer is not a credentialed actuary. Generated
+            output may never be issued as an actuarial opinion.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/production-runs/{runId}/sign-off:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    post:
+      operationId: signOffProductionRun
+      tags: [Reporting]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttestationCreate"
+      responses:
+        "200":
+          description: Close signed off and results released for posting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeProductionRun"
+        "409":
+          description: >-
+            Sign-off blocked by an unresolved reconciliation break or an
+            unattested required narrative.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/registry/models:
+    get:
+      operationId: listModelRegistryEntries
+      tags: [Registry]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: productionStatus
+          in: query
+          schema:
+            type: string
+            enum: [in_production, quarantined, retired]
+        - name: documentationState
+          in: query
+          schema:
+            type: string
+            enum: [sufficient, insufficient, lapsed]
+      responses:
+        "200":
+          description: Model register with ownership and documentation state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeModelRegistryEntry"
+    post:
+      operationId: registerActuarialModel
+      tags: [Registry]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModelRegistryEntryCreate"
+      responses:
+        "201":
+          description: Model registered, production status pending documentation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeModelRegistryEntry"
+  /v1/registry/assumption-sets:
+    get:
+      operationId: listAssumptionSets
+      tags: [Registry]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: assumptionType
+          in: query
+          schema:
+            type: string
+            enum: [mortality, morbidity, lapse, expense, discount_rate, reinsurance, economic]
+      responses:
+        "200":
+          description: Versioned assumption sets with supporting studies
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeAssumptionSet"
+  /v1/registry/change-requests:
+    get:
+      operationId: listChangeRequests
+      tags: [Registry]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [draft, impact_pending, awaiting_approval, approved, rejected, implemented]
+      responses:
+        "200":
+          description: Model and assumption change requests page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeChangeRequest"
+    post:
+      operationId: raiseChangeRequest
+      tags: [Registry]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeRequestCreate"
+      responses:
+        "201":
+          description: Change raised, impact assessment required before approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeChangeRequest"
+  /v1/registry/change-requests/{changeRequestId}/impact-assessment:
+    parameters:
+      - $ref: "#/components/parameters/ChangeRequestId"
+    post:
+      operationId: submitImpactAssessment
+      tags: [Registry]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImpactAssessmentCreate"
+      responses:
+        "201":
+          description: Quantified impact recorded so the change is separable in attribution
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeImpactAssessment"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /v1/deliverables:
+    get:
+      operationId: listRegulatoryDeliverables
+      tags: [Deliverables]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [not_started, in_progress, at_risk, submitted, late]
+      responses:
+        "200":
+          description: Statutory deliverables against deadlines with early warning
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeRegulatoryDeliverable"
+  /v1/deliverables/filing-consistency:
+    get:
+      operationId: getFilingConsistencyCheck
+      tags: [Deliverables]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: filingReference
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: cohort
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Pricing basis reconciled to valuation basis for the cohort
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeFilingConsistencyCheck"
+  /v1/deliverables/inforce-inventory:
+    post:
+      operationId: queryInforceInventory
+      tags: [Deliverables]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InforceInventoryQueryCreate"
+      responses:
+        "200":
+          description: >-
+            Exposure and concentration answer, for example count and reserve for
+            lives above attained age 90 or contracts carrying a given guarantee.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeInforceInventoryResult"
+  /v1/cycle-composition:
+    get:
+      operationId: getCycleComposition
+      tags: [Reporting]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: reportingPeriod
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Production versus analysis hours and drafting hours per close
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeCycleComposition"
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema:
+        type: string
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
+    ResultSetId:
+      name: resultSetId
+      in: path
+      required: true
+      schema:
+        type: string
+    BreakId:
+      name: breakId
+      in: path
+      required: true
+      schema:
+        type: string
+    AttributionItemId:
+      name: attributionItemId
+      in: path
+      required: true
+      schema:
+        type: string
+    NarrativeId:
+      name: narrativeId
+      in: path
+      required: true
+      schema:
+        type: string
+    ChangeRequestId:
+      name: changeRequestId
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnprocessableEntity:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    ResponseMeta:
+      type: object
+      required: [requestId, timestamp]
+      properties:
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: number
+          format: double
+        currency:
+          type: string
+          example: USD
+    ReportingBasis:
+      type: string
+      enum:
+        - ifrs17
+        - long_duration_targeted_improvements
+        - statutory
+        - principle_based_reserving
+        - solvency
+        - management
+    RunStatus:
+      type: string
+      enum:
+        - scheduled
+        - running
+        - completed_unattended
+        - completed_with_intervention
+        - failed
+        - awaiting_adjudication
+        - signed_off
+    AttributionCause:
+      type: string
+      enum:
+        - new_business
+        - expected_release
+        - assumption_change
+        - experience_variance
+        - model_change
+        - data_correction
+        - reinsurance
+        - economic_movement
+        - manual_adjustment
+        - unexplained
+    ProductionRun:
+      type: object
+      required: [id, reportingPeriod, basis, status]
+      properties:
+        id:
+          type: string
+        reportingPeriod:
+          type: string
+        basis:
+          $ref: "#/components/schemas/ReportingBasis"
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        scheduledStart:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        jobCount:
+          type: integer
+        unattendedCompletionRate:
+          type: number
+          format: float
+        escalationCount:
+          type: integer
+        openBreakCount:
+          type: integer
+        onCallOwnerId:
+          type: string
+        signedOffBy:
+          type: string
+        signedOffAt:
+          type: string
+          format: date-time
+    ProductionRunCreate:
+      type: object
+      required: [reportingPeriod, basis]
+      properties:
+        reportingPeriod:
+          type: string
+        basis:
+          $ref: "#/components/schemas/ReportingBasis"
+        scheduledStart:
+          type: string
+          format: date-time
+        modelScope:
+          type: array
+          items:
+            type: string
+        onCallOwnerId:
+          type: string
+    RunJob:
+      type: object
+      required: [id, runId, jobKind, status]
+      properties:
+        id:
+          type: string
+        runId:
+          type: string
+        jobKind:
+          type: string
+          enum:
+            - data_extract
+            - model_execution
+            - aggregation
+            - allocation
+            - reconciliation_check
+            - attribution
+            - posting
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, retrying, escalated, skipped]
+        dependsOn:
+          type: array
+          items:
+            type: string
+        safeToRetry:
+          type: boolean
+        attempt:
+          type: integer
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        failureReason:
+          type: string
+        escalatedToUserId:
+          type: string
+    DependencyEdge:
+      type: object
+      required: [fromJob, toJob, origin]
+      properties:
+        fromJob:
+          type: string
+        toJob:
+          type: string
+        origin:
+          type: string
+          enum: [declared, discovered]
+        firstObservedAt:
+          type: string
+          format: date-time
+        causedFailures:
+          type: integer
+    DependencyGraph:
+      type: object
+      properties:
+        basis:
+          $ref: "#/components/schemas/ReportingBasis"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/DependencyEdge"
+        undeclaredEdgeCount:
+          type: integer
+    ResultSet:
+      type: object
+      required: [id, runId, measure]
+      properties:
+        id:
+          type: string
+        runId:
+          type: string
+        measure:
+          type: string
+        groupingLevel:
+          type: string
+          enum: [entity, portfolio, contract_group, cohort, product]
+        groupingKey:
+          type: string
+        value:
+          $ref: "#/components/schemas/Money"
+        priorValue:
+          $ref: "#/components/schemas/Money"
+    ResultLineage:
+      type: object
+      properties:
+        resultSetId:
+          type: string
+        modelVersions:
+          type: array
+          items:
+            type: object
+            properties:
+              modelId:
+                type: string
+              version:
+                type: string
+              codeHash:
+                type: string
+        assumptionSetIds:
+          type: array
+          items:
+            type: string
+        dataExtracts:
+          type: array
+          items:
+            type: object
+            properties:
+              extractId:
+                type: string
+              sourceSystem:
+                type: string
+              asOfDate:
+                type: string
+                format: date
+              recordCount:
+                type: integer
+        treatyTermsIds:
+          type: array
+          items:
+            type: string
+        manualAdjustmentIds:
+          type: array
+          items:
+            type: string
+        reproducibleWithoutRerun:
+          type: boolean
+    ReconciliationCheck:
+      type: object
+      required: [id, runId, checkKind, outcome]
+      properties:
+        id:
+          type: string
+        runId:
+          type: string
+        checkKind:
+          type: string
+          enum:
+            - model_to_ledger
+            - model_to_extract
+            - period_over_period
+            - aggregation_completeness
+            - reinsurance_cession_tie
+            - cohort_completeness
+        outcome:
+          type: string
+          enum: [passed, broken, waived]
+        toleranceAmount:
+          $ref: "#/components/schemas/Money"
+        differenceAmount:
+          $ref: "#/components/schemas/Money"
+        blocksSignOff:
+          type: boolean
+        checkedAt:
+          type: string
+          format: date-time
+    ReconciliationBreak:
+      type: object
+      required: [id, reconciliationCheckId, status]
+      properties:
+        id:
+          type: string
+        reconciliationCheckId:
+          type: string
+        status:
+          type: string
+          enum: [open, adjudicated, resolved, tolerance_accepted]
+        differenceAmount:
+          $ref: "#/components/schemas/Money"
+        resolution:
+          type: string
+          enum: [corrected_upstream, manual_adjustment, tolerance_accepted, rerun_required]
+        adjudicatedBy:
+          type: string
+        rationale:
+          type: string
+        adjudicatedAt:
+          type: string
+          format: date-time
+    ManualAdjustment:
+      type: object
+      required: [id, runId, amount, reason, ownerId]
+      properties:
+        id:
+          type: string
+        runId:
+          type: string
+        resultSetId:
+          type: string
+        amount:
+          $ref: "#/components/schemas/Money"
+        reason:
+          type: string
+        reasonCategory:
+          type: string
+          enum:
+            - known_model_limitation
+            - data_defect
+            - timing_difference
+            - regulatory_override
+            - judgement_overlay
+        ownerId:
+          type: string
+        approverId:
+          type: string
+        reversalExpectedPeriod:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    ManualAdjustmentCreate:
+      type: object
+      required: [runId, amount, reason, reasonCategory, ownerId, approverId]
+      properties:
+        runId:
+          type: string
+        resultSetId:
+          type: string
+        amount:
+          $ref: "#/components/schemas/Money"
+        reason:
+          type: string
+        reasonCategory:
+          type: string
+        ownerId:
+          type: string
+        approverId:
+          type: string
+        reversalExpectedPeriod:
+          type: string
+    AttributionItem:
+      type: object
+      required: [id, cause, amount]
+      properties:
+        id:
+          type: string
+        cause:
+          $ref: "#/components/schemas/AttributionCause"
+        amount:
+          $ref: "#/components/schemas/Money"
+        groupingKey:
+          type: string
+        sourceReference:
+          type: string
+          description: Change request, study, or adjustment that evidences the cause
+        automaticallyAttributed:
+          type: boolean
+        reclassifiedBy:
+          type: string
+        reclassificationRationale:
+          type: string
+    MovementAttribution:
+      type: object
+      required: [runId, measure, openingValue, closingValue]
+      properties:
+        runId:
+          type: string
+        measure:
+          type: string
+        groupingLevel:
+          type: string
+        openingValue:
+          $ref: "#/components/schemas/Money"
+        closingValue:
+          $ref: "#/components/schemas/Money"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttributionItem"
+        unexplainedAmount:
+          $ref: "#/components/schemas/Money"
+        disclosureReady:
+          type: boolean
+    NarrativeDraft:
+      type: object
+      required: [id, runId, documentKind, state]
+      properties:
+        id:
+          type: string
+        runId:
+          type: string
+        documentKind:
+          type: string
+          enum:
+            - period_commentary
+            - disclosure_note
+            - variance_analysis
+            - asset_adequacy_memorandum
+            - board_report
+            - filing_exhibit
+        state:
+          type: string
+          enum: [generated, in_edit, awaiting_attestation, attested, published, withdrawn]
+        generatedFromAttributionIds:
+          type: array
+          items:
+            type: string
+        bodyMarkdown:
+          type: string
+        editedByUserIds:
+          type: array
+          items:
+            type: string
+        generatedAt:
+          type: string
+          format: date-time
+    NarrativeDraftCreate:
+      type: object
+      required: [runId, documentKind]
+      properties:
+        runId:
+          type: string
+        documentKind:
+          type: string
+        groupingLevel:
+          type: string
+        includeMeasures:
+          type: array
+          items:
+            type: string
+    Attestation:
+      type: object
+      required: [id, subjectId, actuaryId, statement]
+      properties:
+        id:
+          type: string
+        subjectId:
+          type: string
+        subjectKind:
+          type: string
+          enum: [narrative, production_run, deliverable]
+        actuaryId:
+          type: string
+        credentialReference:
+          type: string
+        statement:
+          type: string
+        professionalStandardsBasis:
+          type: string
+        signedAt:
+          type: string
+          format: date-time
+    AttestationCreate:
+      type: object
+      required: [actuaryId, statement]
+      properties:
+        actuaryId:
+          type: string
+        credentialReference:
+          type: string
+        statement:
+          type: string
+        professionalStandardsBasis:
+          type: string
+        conditions:
+          type: array
+          items:
+            type: string
+    ModelRegistryEntry:
+      type: object
+      required: [id, name, ownerId, productionStatus]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        modelPurpose:
+          type: string
+          enum: [valuation, pricing, capital, experience_analysis, projection]
+        ownerId:
+          type: string
+        productionStatus:
+          type: string
+          enum: [in_production, quarantined, retired]
+        currentVersion:
+          type: string
+        documentation:
+          $ref: "#/components/schemas/DocumentationRecord"
+        usedInBases:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReportingBasis"
+        openChangeRequestIds:
+          type: array
+          items:
+            type: string
+    ModelRegistryEntryCreate:
+      type: object
+      required: [name, ownerId, modelPurpose]
+      properties:
+        name:
+          type: string
+        modelPurpose:
+          type: string
+        ownerId:
+          type: string
+        currentVersion:
+          type: string
+        usedInBases:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReportingBasis"
+    DocumentationRecord:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [sufficient, insufficient, lapsed]
+        sufficiencyTestedBy:
+          type: string
+          description: Reviewer who confirmed another qualified actuary could assess the work
+        lastReviewedAt:
+          type: string
+          format: date-time
+        nextReviewDue:
+          type: string
+          format: date
+        gaps:
+          type: array
+          items:
+            type: string
+    AssumptionSet:
+      type: object
+      required: [id, assumptionType, version]
+      properties:
+        id:
+          type: string
+        assumptionType:
+          type: string
+          enum: [mortality, morbidity, lapse, expense, discount_rate, reinsurance, economic]
+        version:
+          type: string
+        ownerId:
+          type: string
+        supportingStudyReference:
+          type: string
+        effectiveFrom:
+          type: string
+          format: date
+        quantifiedImpact:
+          $ref: "#/components/schemas/Money"
+        approvedBy:
+          type: string
+    ChangeRequest:
+      type: object
+      required: [id, changeKind, state]
+      properties:
+        id:
+          type: string
+        changeKind:
+          type: string
+          enum: [model_change, assumption_change, methodology_change, data_source_change]
+        subjectId:
+          type: string
+        description:
+          type: string
+        state:
+          type: string
+          enum: [draft, impact_pending, awaiting_approval, approved, rejected, implemented]
+        requestedBy:
+          type: string
+        impactAssessment:
+          $ref: "#/components/schemas/ImpactAssessment"
+        approvedBy:
+          type: string
+        targetPeriod:
+          type: string
+    ChangeRequestCreate:
+      type: object
+      required: [changeKind, subjectId, description, requestedBy]
+      properties:
+        changeKind:
+          type: string
+        subjectId:
+          type: string
+        description:
+          type: string
+        requestedBy:
+          type: string
+        targetPeriod:
+          type: string
+    ImpactAssessment:
+      type: object
+      required: [assessedBy, quantifiedImpact]
+      properties:
+        assessedBy:
+          type: string
+        quantifiedImpact:
+          $ref: "#/components/schemas/Money"
+        affectedMeasures:
+          type: array
+          items:
+            type: string
+        affectedGroupings:
+          type: array
+          items:
+            type: string
+        methodology:
+          type: string
+        assessedAt:
+          type: string
+          format: date-time
+    ImpactAssessmentCreate:
+      type: object
+      required: [assessedBy, quantifiedImpact]
+      properties:
+        assessedBy:
+          type: string
+        quantifiedImpact:
+          $ref: "#/components/schemas/Money"
+        affectedMeasures:
+          type: array
+          items:
+            type: string
+        affectedGroupings:
+          type: array
+          items:
+            type: string
+        methodology:
+          type: string
+    RegulatoryDeliverable:
+      type: object
+      required: [id, name, dueDate, status]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          example: Asset adequacy testing memorandum
+        jurisdiction:
+          type: string
+        dueDate:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [not_started, in_progress, at_risk, submitted, late]
+        responsibleActuaryId:
+          type: string
+        dependentRunId:
+          type: string
+        estimatedEffortHours:
+          type: number
+          format: float
+        contributorCount:
+          type: integer
+        warningRaisedAt:
+          type: string
+          format: date-time
+    FilingConsistencyCheck:
+      type: object
+      properties:
+        filingReference:
+          type: string
+        cohort:
+          type: string
+        pricingAssumptionSetIds:
+          type: array
+          items:
+            type: string
+        valuationAssumptionSetIds:
+          type: array
+          items:
+            type: string
+        consistent:
+          type: boolean
+        differences:
+          type: array
+          items:
+            type: object
+            properties:
+              assumptionType:
+                type: string
+              pricingValue:
+                type: string
+              valuationValue:
+                type: string
+              rationale:
+                type: string
+        checkedAt:
+          type: string
+          format: date-time
+    InforceInventoryQueryCreate:
+      type: object
+      required: [dimension]
+      properties:
+        dimension:
+          type: string
+          enum:
+            - attained_age_band
+            - guarantee_type
+            - rider_type
+            - issue_year
+            - product
+            - reinsurance_treaty
+        filter:
+          type: object
+          additionalProperties:
+            type: string
+        asOfDate:
+          type: string
+          format: date
+    InforceInventoryResult:
+      type: object
+      properties:
+        dimension:
+          type: string
+        asOfDate:
+          type: string
+          format: date
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              policyCount:
+                type: integer
+              faceAmount:
+                $ref: "#/components/schemas/Money"
+              reserve:
+                $ref: "#/components/schemas/Money"
+        sourceExtractId:
+          type: string
+    CycleComposition:
+      type: object
+      properties:
+        reportingPeriod:
+          type: string
+        calendarDaysToSignOff:
+          type: integer
+        productionHours:
+          type: number
+          format: float
+        analysisHours:
+          type: number
+          format: float
+        draftingHours:
+          type: number
+          format: float
+        overnightEscalations:
+          type: integer
+        manualAdjustmentCount:
+          type: integer
+        priorPeriodComparison:
+          type: object
+          additionalProperties:
+            type: number
+            format: float
+    DataEnvelopeProductionRun:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ProductionRun"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeRunJob:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/RunJob"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeDependencyGraph:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DependencyGraph"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeResultLineage:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ResultLineage"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeReconciliationBreak:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ReconciliationBreak"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeManualAdjustment:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ManualAdjustment"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeMovementAttribution:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/MovementAttribution"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeAttributionItem:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/AttributionItem"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeNarrativeDraft:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/NarrativeDraft"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeAttestation:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/Attestation"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeModelRegistryEntry:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ModelRegistryEntry"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeChangeRequest:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ChangeRequest"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeImpactAssessment:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ImpactAssessment"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeFilingConsistencyCheck:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/FilingConsistencyCheck"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeInforceInventoryResult:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/InforceInventoryResult"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeCycleComposition:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/CycleComposition"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeProductionRun:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/ProductionRun"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeRunJob:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/RunJob"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeReconciliationCheck:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/ReconciliationCheck"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeNarrativeDraft:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/NarrativeDraft"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeModelRegistryEntry:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/ModelRegistryEntry"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeAssumptionSet:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/AssumptionSet"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeChangeRequest:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/ChangeRequest"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeRegulatoryDeliverable:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/RegulatoryDeliverable"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
